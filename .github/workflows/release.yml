@@ -1,0 +1,123 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v1.0.0
+
+jobs:
+  build:
+    name: Build Executables
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: node18-macos-x64
+            output: LocalStream-mac
+            artifact: LocalStream-mac
+          - os: macos-latest
+            target: node18-macos-arm64
+            output: LocalStream-mac-arm64
+            artifact: LocalStream-mac-arm64
+          - os: windows-latest
+            target: node18-win-x64
+            output: LocalStream-win.exe
+            artifact: LocalStream-win.exe
+          - os: ubuntu-latest
+            target: node18-linux-x64
+            output: LocalStream-linux
+            artifact: LocalStream-linux
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate SSL certificates
+        run: npm run generate-cert
+
+      - name: Build executable
+        run: npx pkg . --targets ${{ matrix.target }} --compress GZip --output dist/${{ matrix.output }}
+
+      - name: Make executable (Unix)
+        if: runner.os != 'Windows'
+        run: chmod +x dist/${{ matrix.output }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.output }}
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Display structure of downloaded files
+        run: ls -R dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/LocalStream-mac/LocalStream-mac
+            dist/LocalStream-mac-arm64/LocalStream-mac-arm64
+            dist/LocalStream-win.exe/LocalStream-win.exe
+            dist/LocalStream-linux/LocalStream-linux
+          body: |
+            ## LocalStream Release ${{ github.ref_name }}
+            
+            ### Downloads
+            
+            Choose the appropriate executable for your platform:
+            
+            - **macOS (Intel)**: `LocalStream-mac`
+            - **macOS (Apple Silicon)**: `LocalStream-mac-arm64`
+            - **Windows**: `LocalStream-win.exe`
+            - **Linux**: `LocalStream-linux`
+            
+            ### Installation
+            
+            1. Download the executable for your platform
+            2. Run it (no Node.js installation required!)
+            3. Access LocalStream at `http://localhost:3000` or `https://localhost:3443`
+            
+            ### What's New
+            
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+            
+            ### Documentation
+            
+            - [Quick Start Guide](https://github.com/${{ github.repository }}/blob/main/README.md)
+            - [iOS Setup](https://github.com/${{ github.repository }}/blob/main/docs/iOS_SETUP.md)
+            - [OBS Integration](https://github.com/${{ github.repository }}/blob/main/docs/OBS_SETUP.md)
+            
+            ### Support
+            
+            For issues and questions, please visit the [Issues page](https://github.com/${{ github.repository }}/issues).
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
