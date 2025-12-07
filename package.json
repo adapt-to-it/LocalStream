@@ -1,8 +1,9 @@
 {
     "name": "localstream",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Local network WebRTC streaming for OBS",
     "main": "server.js",
+    "bin": "server.js",
     "scripts": {
         "start": "node server.js",
         "generate-cert": "openssl req -x509 -newkey rsa:4096 -keyout localhost-key.pem -out localhost-cert.pem -days 365 -nodes -subj '/CN=localhost'",
