@@ -28,6 +28,9 @@ jobs:
       - name: Generate SSL certificates
         run: npm run generate-cert
 
+      - name: Generate app icons
+        run: npm run generate-icons
+
       - name: Build Electron Apps
         run: npm run build:all
         env:

@@ -10,6 +10,7 @@
         "start": "node server.js",
         "electron": "env -u ELECTRON_RUN_AS_NODE electron .",
         "generate-cert": "openssl req -x509 -newkey rsa:4096 -keyout localhost-key.pem -out localhost-cert.pem -days 365 -nodes -subj '/CN=localhost'",
+        "generate-icons": "node scripts/generate-icons.js",
         "build": "electron-builder",
         "build:mac": "electron-builder --mac",
         "build:mac-arm": "electron-builder --mac --arm64",
@@ -35,24 +36,33 @@
             "target": [
                 {
                     "target": "zip",
-                    "arch": ["x64", "arm64"]
+                    "arch": [
+                        "x64",
+                        "arm64"
+                    ]
                 }
             ],
-            "category": "public.app-category.utilities"
+            "category": "public.app-category.utilities",
+            "icon": "gui/icon.icns"
         },
         "win": {
             "target": [
                 {
                     "target": "zip",
-                    "arch": ["x64"]
+                    "arch": [
+                        "x64"
+                    ]
                 }
-            ]
+            ],
+            "icon": "gui/icon.ico"
         },
         "linux": {
             "target": [
                 {
                     "target": "zip",
-                    "arch": ["x64"]
+                    "arch": [
+                        "x64"
+                    ]
                 }
             ],
             "category": "Utility"
@@ -77,6 +87,7 @@
         "electron": "^28.0.0",
         "electron-builder": "^26.0.12",
         "nodemon": "^3.0.2",
-        "pkg": "^5.8.1"
+        "pkg": "^5.8.1",
+        "png2icons": "^2.0.1"
     }
 }
