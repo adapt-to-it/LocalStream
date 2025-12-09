@@ -296,7 +296,7 @@ async function startStreaming() {
                 frameRate: { ideal: preset.frameRate },
                 facingMode: facingMode
             },
-            audio: true
+            audio: false
         };
 
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -466,7 +466,7 @@ async function switchCamera() {
                 frameRate: { ideal: preset.frameRate },
                 facingMode: facingMode
             },
-            audio: true
+            audio: false
         };
 
         // Stop current stream

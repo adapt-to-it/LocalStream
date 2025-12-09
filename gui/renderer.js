@@ -142,12 +142,12 @@ document.addEventListener('keydown', (e) => {
 
 // Listen for server status updates
 window.electronAPI.onServerStatus((data) => {
-    isServerRunning = data.running;
+    isServerRunning = data.status === 'running';
     serverConfig = data.config;
 
-    if (data.running) {
+    if (data.status === 'running') {
         updateUIForRunningState();
-    } else {
+    } else if (data.status === 'stopped') {
         updateUIForStoppedState();
     }
 });
@@ -237,12 +237,12 @@ function getServerURL() {
 
 async function loadInitialStatus() {
     try {
-        const status = await window.electronAPI.getStatus();
-        if (status) {
-            isServerRunning = status.running;
-            serverConfig = status.config;
+        const data = await window.electronAPI.getStatus();
+        if (data) {
+            isServerRunning = data.status === 'running';
+            serverConfig = data.config;
 
-            if (status.running) {
+            if (data.status === 'running') {
                 updateUIForRunningState();
             }
         }

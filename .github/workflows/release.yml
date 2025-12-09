@@ -25,6 +25,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Update Version from Tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Setting package version to $VERSION"
+          npm version $VERSION --no-git-tag-version
+
       - name: Generate SSL certificates
         run: npm run generate-cert
 
@@ -75,10 +83,10 @@ jobs:
 
             ### Downloads
 
-            - **macOS (Intel)**: `LocalStream-${{ github.ref_name }}-mac-x64.zip`
-            - **macOS (Apple Silicon/M1)**: `LocalStream-${{ github.ref_name }}-mac-arm64.zip`
-            - **Windows (x64)**: `LocalStream-${{ github.ref_name }}-win-x64.zip`
-            - **Linux (x64)**: `LocalStream-${{ github.ref_name }}-linux-x64.zip`
+            - **macOS (Intel)**: `LocalStream-${{ steps.version.outputs.VERSION }}-mac-x64.zip`
+            - **macOS (Apple Silicon/M1)**: `LocalStream-${{ steps.version.outputs.VERSION }}-mac-arm64.zip`
+            - **Windows (x64)**: `LocalStream-${{ steps.version.outputs.VERSION }}-win-x64.zip`
+            - **Linux (x64)**: `LocalStream-${{ steps.version.outputs.VERSION }}-linux-x64.zip`
 
             ### Installation
 

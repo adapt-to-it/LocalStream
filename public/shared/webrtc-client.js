@@ -48,6 +48,7 @@ class WebRTCClient {
 
             if (state === 'connected') {
                 this.startStatsMonitoring();
+                this.optimizeForLAN(); // ✅ Apply LAN optimizations
             } else if (state === 'disconnected' || state === 'failed') {
                 this.stopStatsMonitoring();
             }
@@ -62,12 +63,86 @@ class WebRTCClient {
     }
 
     /**
+     * ✅ Apply LAN Optimizations: H.264, Bitrate Cap, Buffer
+     */
+    optimizeForLAN() {
+        console.log('🚀 Applying LAN optimizations...');
+
+        // 1. Buffer configuration for Receiver
+        this.peerConnection.getReceivers().forEach(receiver => {
+            if (receiver.track.kind === 'video') {
+                if (receiver.playoutDelayHint !== undefined) {
+                    receiver.playoutDelayHint = 0.1; // 100ms buffer for smooth playback
+                    console.log('✅ Receiver buffer set to 100ms');
+                }
+            }
+        });
+
+        // 2. Bitrate configuration for Sender
+        this.peerConnection.getSenders().forEach(async sender => {
+            if (sender.track && sender.track.kind === 'video') {
+                try {
+                    const params = sender.getParameters();
+                    if (!params.encodings) params.encodings = [{}];
+
+                    // Cap bitrate at 6 Mbps for network stability
+                    params.encodings[0].maxBitrate = 6000000;
+
+                    // Ensure H.264 if possible
+                    if (RTCRtpSender.getCapabilities) {
+                        const caps = RTCRtpSender.getCapabilities('video');
+                        if (caps && caps.codecs) {
+                            // Find H.264 High Profile or Baseline
+                            const h264 = caps.codecs.find(c =>
+                                c.mimeType.toLowerCase() === 'video/h264' &&
+                                (c.sdpFmtpLine.includes('profile-level-id=42e01f') || // High
+                                    c.sdpFmtpLine.includes('profile-level-id=42001f'))   // Baseline
+                            );
+
+                            // Note: setCodecPreferences must be called on Transceiver, not Sender directly usually,
+                            // but we can try to hint via parameters or use setCodecPreferences on transceiver if available.
+                        }
+                    }
+
+                    await sender.setParameters(params);
+                    console.log('✅ Sender bitrate capped at 6 Mbps');
+                } catch (err) {
+                    console.warn('⚠️ Failed to set sender parameters:', err);
+                }
+            }
+        });
+    }
+
+    /**
      * Add local stream to peer connection
      */
     addLocalStream(stream) {
         this.localStream = stream;
         stream.getTracks().forEach(track => {
             this.peerConnection.addTrack(track, stream);
+        });
+
+        // Try to set Codec Preferences early (before offer)
+        this.setPreferredCodec();
+    }
+
+    /**
+     * Set Preferred Codec (H.264)
+     */
+    setPreferredCodec() {
+        const transceivers = this.peerConnection.getTransceivers();
+        transceivers.forEach(transceiver => {
+            if (transceiver.sender.track && transceiver.sender.track.kind === 'video') {
+                if ('setCodecPreferences' in transceiver && RTCRtpSender.getCapabilities) {
+                    const caps = RTCRtpSender.getCapabilities('video');
+                    const h264 = caps.codecs.filter(c => c.mimeType === 'video/H264');
+
+                    if (h264.length > 0) {
+                        transceiver.setCodecPreferences(h264);
+                        console.log('✅ Preferred codec set to H.264');
+                    }
+                }
+            }
         });
     }
 
@@ -83,6 +158,12 @@ class WebRTCClient {
             }
 
             this.remoteStream.addTrack(event.track);
+
+            // Apply buffer hint immediately on track reception
+            if (event.receiver && event.receiver.playoutDelayHint !== undefined) {
+                event.receiver.playoutDelayHint = 0.1; // 100ms
+            }
+
             this.onRemoteStream(this.remoteStream);
         };
     }
@@ -94,7 +175,7 @@ class WebRTCClient {
         this.remotePeerId = remotePeerId;
 
         const offer = await this.peerConnection.createOffer({
-            offerToReceiveAudio: true,
+            offerToReceiveAudio: false, // ✅ Disable audio
             offerToReceiveVideo: true
         });
 
@@ -196,11 +277,6 @@ class WebRTCClient {
                     result.video.bitrate = Math.round((bytesDiff * 8) / 1000); // kbps
                 }
                 this.lastBytesSent = report.bytesSent;
-            }
-
-            // Audio stats
-            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
-                result.audio.packetsLost = report.packetsLost || 0;
             }
 
             // Connection stats

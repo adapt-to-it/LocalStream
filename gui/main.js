@@ -1,113 +1,172 @@
-// Electron main process
-const path = require('path');
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
-const server = require('../server.js');
-const QRCode = require('qrcode');
+const path = require('path');
+const { fork } = require('child_process');
 
-let mainWindow = null;
-let serverRunning = false;
-let serverConfig = null;
+let mainWindow;
+let serverProcess = null;
+let serverStatus = 'stopped'; // 'stopped', 'starting', 'running', 'stopping'
+let currentConfig = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1000,
-        height: 800,
-        minWidth: 800,
-        minHeight: 600,
+        width: 800,
+        height: 600,
+        minWidth: 600,
+        minHeight: 500,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
             contextIsolation: true
         },
-        title: 'LocalStream Server Control',
-        autoHideMenuBar: true
+        title: "LocalStream Server Control",
+        autoHideMenuBar: true,
+        icon: path.join(__dirname, '../public/favicon.ico')
     });
 
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
-    mainWindow.on('closed', () => {
-        mainWindow = null;
-    });
-
-    // Send initial status
     mainWindow.webContents.on('did-finish-load', () => {
-        mainWindow.webContents.send('server-status', {
-            running: serverRunning,
-            config: serverConfig
-        });
+        mainWindow.webContents.send('server-status', { status: serverStatus, config: currentConfig });
     });
 }
 
-// Logger function to send logs to GUI
 function sendLog(message) {
     if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('server-log', message);
     }
 }
 
-// IPC Handlers
-ipcMain.handle('start-server', async () => {
-    console.log('IPC: start-server called');
-    if (serverRunning) {
-        console.log('Server already running, returning false');
-        return { success: false, message: 'Server already running' };
+function updateStatus(status, config = null) {
+    serverStatus = status;
+    if (config) currentConfig = config;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('server-status', { status, config });
     }
+}
 
-    try {
-        console.log('Calling server.startServer()...');
-        serverConfig = await server.startServer(sendLog);
-        console.log('Server started successfully, config:', serverConfig);
-        serverRunning = true;
+// --- Server Management via Child Process ---
 
-        mainWindow.webContents.send('server-status', {
-            running: true,
-            config: serverConfig
+function startServerProcess() {
+    return new Promise((resolve, reject) => {
+        if (serverProcess) return resolve(currentConfig);
+
+        const workerPath = path.join(__dirname, 'server-worker.js');
+        serverProcess = fork(workerPath, [], {
+            stdio: ['ignore', 'pipe', 'pipe', 'ipc']
         });
 
-        return { success: true, config: serverConfig };
+        // Handle stdio for debugging
+        serverProcess.stdout.on('data', (data) => console.log(`[Server]: ${data}`));
+        serverProcess.stderr.on('data', (data) => console.error(`[Server Error]: ${data}`));
+
+        // Handle IPC messages from worker
+        serverProcess.on('message', (msg) => {
+            if (msg.type === 'log') {
+                sendLog(msg.message);
+            } else if (msg.type === 'started') {
+                updateStatus('running', msg.config);
+                resolve(msg.config);
+            } else if (msg.type === 'stopped') {
+                updateStatus('stopped');
+                serverProcess = null;
+            } else if (msg.type === 'error') {
+                sendLog(`❌ Process Error: ${msg.error}`);
+                updateStatus('stopped');
+                serverProcess = null;
+                reject(new Error(msg.error));
+            }
+        });
+
+        serverProcess.on('exit', (code) => {
+            if (code !== 0 && code !== null) {
+                sendLog(`⚠️ Server process exited with code ${code}`);
+                updateStatus('stopped');
+            }
+            serverProcess = null;
+        });
+
+        // Send start command
+        serverProcess.send({ command: 'start' });
+    });
+}
+
+function stopServerProcess() {
+    return new Promise((resolve) => {
+        if (!serverProcess) {
+            updateStatus('stopped');
+            return resolve();
+        }
+
+        // Listen for the stopped message
+        const onStopped = (msg) => {
+            if (msg.type === 'stopped') {
+                serverProcess.removeListener('message', onStopped);
+                clearTimeout(killTimeout);
+                resolve();
+            }
+        };
+
+        serverProcess.on('message', onStopped);
+
+        // Safety timeout to kill process if it hangs
+        const killTimeout = setTimeout(() => {
+            serverProcess.removeListener('message', onStopped);
+            if (serverProcess) {
+                console.log('Force killing server process...');
+                serverProcess.kill();
+                serverProcess = null;
+                updateStatus('stopped');
+            }
+            resolve();
+        }, 5000);
+
+        // Send stop command
+        serverProcess.send({ command: 'stop' });
+    });
+}
+
+// --- IPC Handlers for Renderer ---
+
+ipcMain.handle('start-server', async () => {
+    if (serverStatus === 'running' || serverStatus === 'starting') return { success: false, message: 'Server already running' };
+
+    updateStatus('starting');
+    try {
+        const config = await startServerProcess();
+        return { success: true, config };
     } catch (error) {
-        console.error('Error starting server:', error);
-        sendLog(`❌ Error starting server: ${error.message}`);
+        updateStatus('stopped');
         return { success: false, error: error.message };
     }
 });
 
 ipcMain.handle('stop-server', async () => {
-    if (!serverRunning) {
-        return { success: false, message: 'Server not running' };
-    }
+    if (serverStatus === 'stopped') return { success: false, message: 'Server not running' };
 
+    updateStatus('stopping');
     try {
-        await server.stopServer();
-        serverRunning = false;
-        serverConfig = null;
-
-        mainWindow.webContents.send('server-status', {
-            running: false,
-            config: null
-        });
-
+        await stopServerProcess();
         return { success: true };
     } catch (error) {
-        sendLog(`❌ Error stopping server: ${error.message}`);
         return { success: false, error: error.message };
     }
 });
 
 ipcMain.handle('get-status', () => {
     return {
-        running: serverRunning,
-        config: serverConfig
+        status: serverStatus,
+        config: currentConfig
     };
 });
 
-ipcMain.handle('open-url', (_event, url) => {
-    shell.openExternal(url);
+ipcMain.handle('open-url', async (event, url) => {
+    await shell.openExternal(url);
     return { success: true };
 });
 
-ipcMain.handle('generate-qr', async (_event, text) => {
+ipcMain.handle('generate-qr', async (event, text) => {
     try {
+        const QRCode = require('qrcode');
         const dataUrl = await QRCode.toDataURL(text, {
             width: 300,
             margin: 2,
@@ -123,27 +182,31 @@ ipcMain.handle('generate-qr', async (_event, text) => {
     }
 });
 
-// App lifecycle
-app.on('ready', createWindow);
+// --- App Lifecycle ---
 
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-        app.quit();
-    }
+app.whenReady().then(() => {
+    createWindow();
+
+    app.on('activate', function () {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
 });
 
-app.on('activate', () => {
-    if (mainWindow === null) {
-        createWindow();
-    }
+app.on('window-all-closed', function () {
+    if (process.platform !== 'darwin') app.quit();
 });
 
-// Cleanup on quit
 app.on('before-quit', async (event) => {
-    if (serverRunning) {
-        event.preventDefault();
-        await server.stopServer();
-        serverRunning = false;
-        app.exit();
+    if (serverProcess) {
+        event.preventDefault(); // Hold quit
+        if (serverStatus !== 'stopping') {
+            serverProcess.send({ command: 'stop' });
+        }
+
+        // Give it a moment to cleanup
+        setTimeout(() => {
+            if (serverProcess) serverProcess.kill();
+            app.exit();
+        }, 2000);
     }
 });
