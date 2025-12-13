@@ -97,10 +97,12 @@ function stopServerProcess() {
             return resolve();
         }
 
+        const processToKill = serverProcess; // Capture reference
+
         // Listen for the stopped message
         const onStopped = (msg) => {
             if (msg.type === 'stopped') {
-                serverProcess.removeListener('message', onStopped);
+                processToKill.removeListener('message', onStopped);
                 clearTimeout(killTimeout);
                 resolve();
             }
@@ -110,10 +112,10 @@ function stopServerProcess() {
 
         // Safety timeout to kill process if it hangs
         const killTimeout = setTimeout(() => {
-            serverProcess.removeListener('message', onStopped);
-            if (serverProcess) {
+            processToKill.removeListener('message', onStopped);
+            if (serverProcess === processToKill) { // Only kill if it's still the same process
                 console.log('Force killing server process...');
-                serverProcess.kill();
+                processToKill.kill();
                 serverProcess = null;
                 updateStatus('stopped');
             }

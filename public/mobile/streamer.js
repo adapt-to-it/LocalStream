@@ -56,6 +56,9 @@ async function init() {
         return;
     }
 
+    // Initialize/Get Persistent Stream ID
+    getPersistentStreamId();
+
     // Connect to signaling server
     connectToServer();
 
@@ -237,6 +240,26 @@ function initFullscreenControls() {
     });
 }
 
+
+// Get or Create Persistent Stream ID
+function getPersistentStreamId() {
+    const STORAGE_KEY = 'localstream_device_id';
+    let storedId = localStorage.getItem(STORAGE_KEY);
+
+    if (!storedId) {
+        // Generate a simple unique ID
+        storedId = 'stream-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+        localStorage.setItem(STORAGE_KEY, storedId);
+        console.log('Generated new persistent Stream ID:', storedId);
+    } else {
+        console.log('Found persistent Stream ID:', storedId);
+    }
+
+    // Set the global streamId variable (though it will be sent to server for registration)
+    // Note: The variable 'streamId' is also updated when 'registered' event is received.
+    return storedId;
+}
+
 // Connect to signaling server
 function connectToServer() {
     socket = io();
@@ -249,6 +272,23 @@ function connectToServer() {
     socket.on('disconnect', () => {
         console.log('Disconnected from server');
         updateConnectionStatus('disconnected');
+    });
+
+    // ✅ Network Monitor Alert
+    socket.on('network-usage', (data) => {
+        const totalMbps = (data.totalBitrate / 1000000).toFixed(1);
+        if (totalMbps > 15) { // TEST: Lowered to 15 Mbps to trigger alert easily
+            showToast(`⚠️ High Network Load: ${totalMbps} Mbps`, 'warning');
+        }
+    });
+
+    // Start stats monitoring
+    socket.on('stats-config', (config) => {
+        // This listener is typically used to receive configuration for client-side stats collection
+        // For example, to adjust the frequency of stats reporting or what metrics to collect.
+        // The provided instruction seems to have copied parts of the 'registered' event handler.
+        // Assuming the intent was to just log the config or prepare for stats monitoring.
+        console.log('Received stats config from server:', config);
     });
 
     socket.on('registered', (data) => {
@@ -294,7 +334,10 @@ async function startStreaming() {
                 width: { ideal: preset.width },
                 height: { ideal: preset.height },
                 frameRate: { ideal: preset.frameRate },
-                facingMode: facingMode
+                facingMode: facingMode,
+                aspectRatio: { ideal: 16 / 9 },
+                resizeMode: 'none',   // No software cropping
+                latency: { ideal: 0 } // Low latency hints
             },
             audio: false
         };
@@ -313,6 +356,7 @@ async function startStreaming() {
         // Initialize WebRTC client
         webrtcClient = new WebRTCClient({
             iceServers: config.webrtc.iceServers,
+            maxBitrate: preset.bitrate, // ✅ Pass preset bitrate
             onConnectionStateChange: handleConnectionStateChange,
             onStats: handleStats
         });
@@ -323,7 +367,9 @@ async function startStreaming() {
 
         // Register as streamer
         socket.emit('register-streamer', {
+            streamId: getPersistentStreamId(), // ✅ Use persistent ID
             name: streamName.value,
+            quality: qualityPreset.value, // ✅ Send quality for Network Monitor
             resolution: `${settings.width}x${settings.height}`,
             frameRate: settings.frameRate
         });
@@ -438,17 +484,16 @@ function handleStats(stats) {
         latencyEl.textContent = `${latency} ms`;
         latencyEl.style.color = getQualityColor(latency, 'latency');
     }
-
     // Update advanced stats
     packetsLostEl.textContent = stats.video.packetsLost || '0';
 
-    // Send stats to server
-    socket.emit('stats-update', {
-        bitrate: stats.video.bitrate,
-        fps: stats.video.fps,
-        resolution: `${stats.video.width}x${stats.video.height}`,
-        latency: stats.connection.rtt
-    });
+    // Send stats to server (for Network Monitor)
+    if (socket && isStreaming) {
+        socket.emit('stats-update', {
+            role: 'streamer',
+            bitrate: stats.video.bitrate * 1000 // Convert kbps to bps
+        });
+    }
 }
 
 // Switch camera
@@ -464,7 +509,10 @@ async function switchCamera() {
                 width: { ideal: preset.width },
                 height: { ideal: preset.height },
                 frameRate: { ideal: preset.frameRate },
-                facingMode: facingMode
+                facingMode: facingMode,
+                aspectRatio: { ideal: 16 / 9 },
+                resizeMode: 'none',
+                latency: { ideal: 0 }
             },
             audio: false
         };

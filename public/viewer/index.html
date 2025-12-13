@@ -19,11 +19,18 @@
             height: 100vh;
         }
 
-        #remoteVideo {
+        video {
             width: 100%;
             height: 100%;
             object-fit: contain;
-            display: block;
+            background-color: black;
+
+            /* GPU Acceleration & Optimization */
+            will-change: transform;
+            transform: translateZ(0);
+            backface-visibility: hidden;
+            pointer-events: none;
+            user-select: none;
         }
 
         .loading {

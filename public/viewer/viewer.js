@@ -136,6 +136,9 @@ function handleRemoteStream(stream) {
 
     remoteVideo.srcObject = stream;
 
+    // Optimize video element for low latency (GPU/Render)
+    remoteVideo.disableRemotePlayback = true;
+
     // Hide loading, show video
     loading.style.display = 'none';
     error.style.display = 'none';

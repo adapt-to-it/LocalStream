@@ -46,7 +46,12 @@ if (useHttps) {
         cors: {
             origin: '*',
             methods: ['GET', 'POST']
-        }
+        },
+        perMessageDeflate: false, // Disable compression for LAN
+        httpCompression: false,
+        transports: ['websocket', 'polling'], // Prefer websocket
+        pingTimeout: 60000,
+        pingInterval: 25000
     });
     io.attach(httpsServer);
     io.attach(httpServer);
@@ -56,7 +61,9 @@ if (useHttps) {
         cors: {
             origin: '*',
             methods: ['GET', 'POST']
-        }
+        },
+        perMessageDeflate: false, // Disable compression
+        httpCompression: false
     });
 }
 
@@ -81,7 +88,7 @@ app.get('/viewer', (req, res) => {
 const streams = new Map();
 const rooms = new Map();
 
-// Get local IP address
+// Helper to get local IP address
 function getLocalIP() {
     const interfaces = os.networkInterfaces();
     for (const name of Object.keys(interfaces)) {
@@ -91,7 +98,19 @@ function getLocalIP() {
             }
         }
     }
-    return 'localhost';
+    return '127.0.0.1';
+}
+
+// ✅ Broadcast total network usage
+function broadcastNetworkUsage() {
+    let totalBitrate = 0;
+    activeStreams.forEach(bitrate => totalBitrate += bitrate);
+
+    // Broadcast total bps and stream count
+    io.emit('network-usage', {
+        totalBitrate: totalBitrate,
+        streamCount: activeStreams.size
+    });
 }
 
 const localIP = getLocalIP();
@@ -159,6 +178,8 @@ app.get('/api/qr/mobile', async (req, res) => {
 });
 
 // WebRTC Signaling via Socket.IO
+const activeStreams = new Map(); // Store stream info: { id, bitrate }
+
 io.on('connection', (socket) => {
     log(`✅ Client connected: ${socket.id}`);
 
@@ -184,6 +205,15 @@ io.on('connection', (socket) => {
         socket.role = 'streamer';
 
         log(`📹 Streamer registered: ${stream.name} (${streamId})`);
+
+        // ✅ Track initial bitrate for Network Monitor
+        // Try to get bitrate from preset, otherwise fallback to provided value or default
+        let initialBitrate = 6000000;
+        if (data.quality && config.video && config.video.presets && config.video.presets[data.quality]) {
+            initialBitrate = config.video.presets[data.quality].bitrate;
+        }
+        activeStreams.set(socket.id, initialBitrate);
+        broadcastNetworkUsage();
 
         // Use HTTP URL for better OBS compatibility
         socket.emit('registered', {
@@ -255,6 +285,12 @@ io.on('connection', (socket) => {
 
     // Update stream stats
     socket.on('stats-update', (data) => {
+        // ✅ Update active bitrate for Network Monitor
+        if (data.role === 'streamer' && data.bitrate) {
+            activeStreams.set(socket.id, data.bitrate);
+            broadcastNetworkUsage();
+        }
+
         if (socket.streamId && streams.has(socket.streamId)) {
             const stream = streams.get(socket.streamId);
             stream.stats = { ...stream.stats, ...data };
@@ -265,6 +301,9 @@ io.on('connection', (socket) => {
     // Disconnect
     socket.on('disconnect', () => {
         log(`❌ Client disconnected: ${socket.id}`);
+
+        activeStreams.delete(socket.id);
+        broadcastNetworkUsage();
 
         if (socket.streamId) {
             const stream = streams.get(socket.streamId);

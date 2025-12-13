@@ -11,6 +11,7 @@ class WebRTCClient {
         this.remoteStream = null;
         this.socket = null;
         this.iceServers = config.iceServers || [];
+        this.maxBitrate = config.maxBitrate || 6000000; // ✅ NEW: Dynamic bitrate
         this.onRemoteStream = config.onRemoteStream || (() => { });
         this.onConnectionStateChange = config.onConnectionStateChange || (() => { });
         this.onStats = config.onStats || (() => { });
@@ -33,10 +34,18 @@ class WebRTCClient {
         // ICE candidate handling
         this.peerConnection.onicecandidate = (event) => {
             if (event.candidate && this.socket) {
-                this.socket.emit('ice-candidate', {
-                    to: this.remotePeerId,
-                    candidate: event.candidate
-                });
+                // Prefer host candidates for LAN (filter out relay/srflx if direct is available)
+                const candidate = event.candidate;
+                if (candidate.type === 'host' ||
+                    candidate.address?.startsWith('192.168.') ||
+                    candidate.address?.startsWith('10.') ||
+                    candidate.address?.startsWith('172.')) {
+
+                    this.socket.emit('ice-candidate', {
+                        to: this.remotePeerId,
+                        candidate: event.candidate
+                    });
+                }
             }
         };
 
@@ -78,7 +87,7 @@ class WebRTCClient {
             }
         });
 
-        // 2. Bitrate configuration for Sender
+        // 2. Bitrate and Priority configuration for Sender
         this.peerConnection.getSenders().forEach(async sender => {
             if (sender.track && sender.track.kind === 'video') {
                 try {
@@ -86,7 +95,14 @@ class WebRTCClient {
                     if (!params.encodings) params.encodings = [{}];
 
                     // Cap bitrate at 6 Mbps for network stability
-                    params.encodings[0].maxBitrate = 6000000;
+                    params.encodings[0].maxBitrate = this.maxBitrate;
+
+                    // Priority
+                    params.encodings[0].networkPriority = 'high';
+
+                    if ('priority' in sender) {
+                        sender.priority = 'high';
+                    }
 
                     // Ensure H.264 if possible
                     if (RTCRtpSender.getCapabilities) {
@@ -105,7 +121,7 @@ class WebRTCClient {
                     }
 
                     await sender.setParameters(params);
-                    console.log('✅ Sender bitrate capped at 6 Mbps');
+                    console.log(`✅ Sender bitrate capped at ${this.maxBitrate / 1000000} Mbps, Priority High`);
                 } catch (err) {
                     console.warn('⚠️ Failed to set sender parameters:', err);
                 }
@@ -119,6 +135,10 @@ class WebRTCClient {
     addLocalStream(stream) {
         this.localStream = stream;
         stream.getTracks().forEach(track => {
+            // ✅ Content Hint Optimization
+            if (track.kind === 'video' && 'contentHint' in track) {
+                track.contentHint = 'motion';
+            }
             this.peerConnection.addTrack(track, stream);
         });
 
@@ -229,8 +249,90 @@ class WebRTCClient {
 
             const stats = await this.peerConnection.getStats();
             const parsedStats = this.parseStats(stats);
+
+            // ✅ ABR Conservativo Logic
+            this.checkNetworkQuality(parsedStats);
+
             this.onStats(parsedStats);
-        }, 1000);
+        }, 2000); // ✅ Tuning: 2s interval (was 1s)
+    }
+
+    /**
+     * ✅ Conservative Adaptive Bitrate
+     * Adjusts bitrate based on packet loss
+     */
+    async checkNetworkQuality(stats) {
+        // Only run if we are the sender (Streamer)
+        if (!this.localStream) return;
+
+        const packetLoss = parseFloat(stats.connection.packetLoss || 0);
+        const now = Date.now();
+
+        // Initialize state if needed
+        if (!this.abrState) {
+            this.abrState = {
+                highLossStart: 0,
+                lastRecovery: now,
+                currentBitrateCap: this.maxBitrate,
+                minBitrate: this.maxBitrate * 0.5 // Floor at 50%
+            };
+        }
+
+        // 1. Detect Congestion (Packet Loss > 5%)
+        if (packetLoss > 5) {
+            if (this.abrState.highLossStart === 0) {
+                this.abrState.highLossStart = now;
+            } else if (now - this.abrState.highLossStart > 3000) {
+                // Sustained loss for 3s -> Reduce Bitrate
+                const newBitrate = Math.max(
+                    this.abrState.currentBitrateCap * 0.85,
+                    this.abrState.minBitrate
+                );
+
+                if (newBitrate < this.abrState.currentBitrateCap) {
+                    console.warn(`📉 Network congestion! Reducing bitrate to ${(newBitrate / 1000000).toFixed(2)} Mbps`);
+                    this.abrState.currentBitrateCap = newBitrate;
+                    this.abrState.highLossStart = 0; // Reset timer
+                    this.abrState.lastRecovery = now; // Reset recovery timer
+                    await this.applyBitrateCap(newBitrate);
+                }
+            }
+        } else {
+            this.abrState.highLossStart = 0;
+
+            // 2. Recovery (Stable for 10s)
+            if (now - this.abrState.lastRecovery > 10000 &&
+                this.abrState.currentBitrateCap < this.maxBitrate) {
+
+                const newBitrate = Math.min(
+                    this.abrState.currentBitrateCap * 1.05,
+                    this.maxBitrate
+                );
+
+                console.log(`📈 Network stable. Increasing bitrate to ${(newBitrate / 1000000).toFixed(2)} Mbps`);
+                this.abrState.currentBitrateCap = newBitrate;
+                this.abrState.lastRecovery = now;
+                await this.applyBitrateCap(newBitrate);
+            }
+        }
+    }
+
+    /**
+     * Helper to apply bitrate limit
+     */
+    async applyBitrateCap(bitrate) {
+        this.peerConnection.getSenders().forEach(async sender => {
+            if (sender.track && sender.track.kind === 'video') {
+                try {
+                    const params = sender.getParameters();
+                    if (!params.encodings) params.encodings = [{}];
+                    params.encodings[0].maxBitrate = Math.floor(bitrate);
+                    await sender.setParameters(params);
+                } catch (e) {
+                    console.error('Failed to set bitrate:', e);
+                }
+            }
+        });
     }
 
     /**
@@ -248,7 +350,13 @@ class WebRTCClient {
      */
     parseStats(stats) {
         const result = {
-            video: { bitrate: 0, fps: 0, width: 0, height: 0, packetsLost: 0 },
+            video: {
+                bitrate: 0, fps: 0, width: 0, height: 0,
+                packetsLost: 0,
+                framesDropped: 0,
+                framesDecoded: 0,
+                qualityLimitation: 'none'
+            },
             audio: { bitrate: 0, packetsLost: 0 },
             connection: { rtt: 0, packetLoss: 0 }
         };
@@ -260,6 +368,8 @@ class WebRTCClient {
                 result.video.fps = report.framesPerSecond || 0;
                 result.video.width = report.frameWidth || 0;
                 result.video.height = report.frameHeight || 0;
+                result.video.framesDropped = report.framesDropped || 0;
+                result.video.framesDecoded = report.framesDecoded || 0;
 
                 if (report.bytesReceived && this.lastBytesReceived) {
                     const bytesDiff = report.bytesReceived - this.lastBytesReceived;
@@ -271,6 +381,7 @@ class WebRTCClient {
             // Outbound video stats
             if (report.type === 'outbound-rtp' && report.kind === 'video') {
                 result.video.fps = report.framesPerSecond || 0;
+                result.video.qualityLimitation = report.qualityLimitationReason || 'none';
 
                 if (report.bytesSent && this.lastBytesSent) {
                     const bytesDiff = report.bytesSent - this.lastBytesSent;
