@@ -79,11 +79,11 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.os }}" == "macos-latest" ]; then
-            npm run build:mac
+            npm run build:mac -- -p never
           elif [ "${{ matrix.os }}" == "windows-latest" ]; then
-            npm run build:windows
+            npm run build:windows -- -p never
           elif [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
-            npm run build:linux
+            npm run build:linux -- -p never
           fi
 
       - name: Upload Artifacts
