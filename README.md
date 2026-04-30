@@ -191,3 +191,9 @@ For issues and questions:
 **Version**: 1.0.3  
 **Author**: LocalStream Team  
 **Last Updated**: 2025-12-07
+
+---
+
+## Quick file sharing
+
+Learn how to quickly share files locally and remotely: [droplnk.app](https://droplnk.app) · [droplnk.app/s/](https://droplnk.app/s/)
